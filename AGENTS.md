@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-This repository contains a compact Python desktop application. The main code lives in `main.py`; it handles mouse input capture, regression calculation, and the PyQt6 UI. Project metadata and dependencies are in `pyproject.toml`, with locked versions in `uv.lock`. `README.md` is present but empty. There is no `tests/` directory yet.
+This repository contains a Python desktop mouse-rotation calibration tool. `main.py` is the Flet entrypoint. Application code lives in `mrt_app/`: `flet_ui.py` builds the UI, `input_listener.py` handles Linux/Windows mouse input, `geometry.py` contains testable math and filtering logic, and `models.py` defines shared dataclasses. The previous PyQt implementation is archived in `archive/pyqt_main.py`.
 
-If the project grows, split UI widgets, input listeners, and calculation logic into modules under a package such as `mrt/`, and place tests under `tests/`.
+Unit tests live in `tests/`. Project metadata and dependencies are in `pyproject.toml`, with locked versions in `uv.lock`.
 
 ## Build, Test, and Development Commands
 
@@ -34,9 +34,9 @@ On Linux, mouse capture uses `evdev` and may require input-device permissions. T
 
 ## Coding Style & Naming Conventions
 
-Follow standard Python style: 4-space indentation, `snake_case` for functions and variables, and `PascalCase` for classes such as `MouseListenerThread` and `PlotWidget`. Keep constants in uppercase, as with `RAZER_GREEN` and `BG_COLOR`.
+Follow standard Python style: 4-space indentation, `snake_case` for functions and variables, and `PascalCase` for classes such as `MouseRotationApp` and `MouseInputRecorder`. Keep constants in uppercase, as with `RAZER_GREEN` and `BG_COLOR`.
 
-Prefer separating pure logic from UI code. Keep helpers like `calculate_regression()` side-effect free so they are easy to test. Existing comments and UI strings are in Russian; keep user-facing language consistent unless doing a deliberate localization pass.
+Keep pure logic out of the UI layer. Helpers like `calculate_regression()` and `apply_motion_delta()` should remain side-effect free. Existing UI strings are in Russian; keep user-facing language consistent unless doing a deliberate localization pass.
 
 ## Testing Guidelines
 
@@ -46,10 +46,10 @@ For UI and device-input behavior, prefer small integration tests around extracte
 
 ## Commit & Pull Request Guidelines
 
-This repository has no commit history yet, so no local convention is established. Use short imperative commit subjects, for example `Add regression tests` or `Split input listener module`.
+Use short imperative commit subjects, for example `Add regression tests` or `Refactor Flet input listener`.
 
 Pull requests should include a concise description, verification commands, and screenshots or recordings for visible UI changes. Link related issues when available. Note platform-specific behavior, especially Linux input permissions or Windows listener changes.
 
 ## Agent-Specific Instructions
 
-Keep edits small and consistent with the current single-file structure unless the requested change justifies refactoring. Do not introduce new frameworks or formatting tools without updating `pyproject.toml` and documenting the matching command here.
+Keep UI, input, math, and data-model changes in their respective modules. Do not introduce new frameworks or formatting tools without updating `pyproject.toml` and documenting the matching command here.

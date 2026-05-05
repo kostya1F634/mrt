@@ -9,14 +9,14 @@ help: ## Show available commands.
 sync: ## Install dependencies with uv.
 	uv sync
 
-run: ## Run the desktop application.
+run: ## Run the Flet desktop application.
 	uv run python main.py
 
 test: ## Run unit tests.
 	uv run python -m unittest discover -s tests
 
 check: ## Compile Python files and run tests.
-	uv run python -m py_compile main.py tests/test_regression.py
+	uv run python -m py_compile main.py mrt_app/*.py archive/pyqt_main.py tests/test_regression.py
 	uv run python -m unittest discover -s tests
 
 r: run ## Alias for run.

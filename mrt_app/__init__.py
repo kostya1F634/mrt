@@ -1,0 +1,1 @@
+"""Mouse rotation calibration app."""
