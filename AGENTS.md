@@ -11,22 +11,24 @@ If the project grows, split UI widgets, input listeners, and calculation logic i
 Use `uv` for environment and dependency management.
 
 ```bash
-uv sync
+make sync
 ```
 
 Installs the Python version and dependencies.
 
 ```bash
-uv run python main.py
+make run
 ```
 
 Runs the desktop application locally.
 
 ```bash
-uv run python -m pytest
+make test
 ```
 
-Recommended test command once tests are added. Add `pytest` to `pyproject.toml` before relying on this in CI.
+Runs the current unit test suite.
+
+Use `make help` to list all shortcuts, including `make r` and `make t`.
 
 On Linux, mouse capture uses `evdev` and may require input-device permissions. The app reports the required group command when permissions are missing.
 
@@ -38,7 +40,7 @@ Prefer separating pure logic from UI code. Keep helpers like `calculate_regressi
 
 ## Testing Guidelines
 
-There are no tests yet. Start with unit tests for pure functions, especially `calculate_regression()`, under `tests/test_regression.py`. Cover edge cases such as empty paths, vertical movement, and simple diagonal paths.
+Unit tests live under `tests/` and use Python's built-in `unittest` framework. Start with pure functions, especially `calculate_regression()`, under files named `test_*.py`. Cover edge cases such as empty paths, vertical movement, noisy horizontal movement, and simple diagonal paths.
 
 For UI and device-input behavior, prefer small integration tests around extracted logic instead of tests that require real mouse hardware.
 

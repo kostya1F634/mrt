@@ -3,6 +3,7 @@ import math
 import platform
 import logging
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QSizePolicy)
+from PyQt6.QtWidgets import QPushButton, QHBoxLayout, QDialog, QCheckBox, QDialogButtonBox
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont
 
@@ -17,6 +18,10 @@ logging.basicConfig(
 
 RAZER_GREEN = "#44d62c"
 BG_COLOR = "#1a1a1a"
+MIN_FILTER_SPAN_X = 20.0
+MAX_FILTER_ABS_ANGLE = 35.0
+MAX_FILTER_RMSE_RATIO = 0.08
+FILTER_WINDOW_POINTS = 16
 
 # ==========================================
 # МАТЕМАТИКА
@@ -25,21 +30,122 @@ def calculate_regression(path):
     if len(path) < 2:
         return 0.0, 0.0, 0.0
 
-    n = len(path)
-    sum_x = sum(p[0] for p in path)
-    sum_y = sum(p[1] for p in path)
-    sum_x2 = sum(p[0] ** 2 for p in path)
-    sum_xy = sum(p[0] * p[1] for p in path)
+    mean_x = sum(p[0] for p in path) / len(path)
+    mean_y = sum(p[1] for p in path) / len(path)
 
-    denominator = (n * sum_x2) - (sum_x ** 2)
-    if denominator == 0:
-        return 90.0, float('inf'), 0.0
+    sxx = sum((p[0] - mean_x) ** 2 for p in path)
+    syy = sum((p[1] - mean_y) ** 2 for p in path)
+    sxy = sum((p[0] - mean_x) * (p[1] - mean_y) for p in path)
 
-    m = ((n * sum_xy) - (sum_x * sum_y)) / denominator
-    b = (sum_y - m * sum_x) / n
-    angle_degrees = math.degrees(math.atan(m))
+    if sxx == 0 and syy == 0:
+        return 0.0, 0.0, mean_y
+
+    # Главная ось облака точек: минимизирует перпендикулярное расстояние до линии.
+    angle_degrees = 0.5 * math.degrees(math.atan2(2 * sxy, sxx - syy))
+    if angle_degrees > 90:
+        angle_degrees -= 180
+    elif angle_degrees < -90:
+        angle_degrees += 180
+
+    angle_radians = math.radians(angle_degrees)
+    if abs(math.cos(angle_radians)) < 1e-12:
+        return angle_degrees, float("inf"), mean_x
+
+    m = math.tan(angle_radians)
+    b = mean_y - m * mean_x
     
     return angle_degrees, m, b
+
+
+def calculate_path_quality(path):
+    if len(path) < 2:
+        return {
+            "accepted": False,
+            "reason": "Слишком мало точек для расчета.",
+            "angle": 0.0,
+            "m": 0.0,
+            "b": 0.0,
+            "rmse_ratio": 1.0,
+        }
+
+    angle, m, b = calculate_regression(path)
+    min_x = min(p[0] for p in path)
+    max_x = max(p[0] for p in path)
+    min_y = min(p[1] for p in path)
+    max_y = max(p[1] for p in path)
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+    span = max(math.hypot(span_x, span_y), 1.0)
+
+    if math.isinf(m):
+        residuals = [abs(p[0] - b) for p in path]
+    else:
+        residual_scale = math.sqrt(m * m + 1)
+        residuals = [abs(m * p[0] - p[1] + b) / residual_scale for p in path]
+
+    rmse = math.sqrt(sum(r * r for r in residuals) / len(residuals))
+    rmse_ratio = rmse / span
+
+    accepted = True
+    reason = "Траектория принята."
+    if span_x < MIN_FILTER_SPAN_X:
+        accepted = False
+        reason = "Недостаточно горизонтального движения."
+    elif abs(angle) > MAX_FILTER_ABS_ANGLE:
+        accepted = False
+        reason = "Траектория слишком вертикальная."
+    elif rmse_ratio > MAX_FILTER_RMSE_RATIO:
+        accepted = False
+        reason = "Траектория слишком дугообразная или неровная."
+
+    return {
+        "accepted": accepted,
+        "reason": reason,
+        "angle": angle,
+        "m": m,
+        "b": b,
+        "rmse_ratio": rmse_ratio,
+    }
+
+
+def normalize_motion_angle(dx, dy):
+    angle = math.degrees(math.atan2(dy, dx))
+    if angle > 90:
+        angle -= 180
+    elif angle <= -90:
+        angle += 180
+    return angle
+
+
+def should_accept_motion_delta(path, dx, dy):
+    if dx == 0 and dy == 0:
+        return False
+
+    if abs(normalize_motion_angle(dx, dy)) > MAX_FILTER_ABS_ANGLE:
+        return False
+
+    if len(path) < 3:
+        return True
+
+    last_x, last_y = path[-1]
+    candidate = (last_x + dx, last_y + dy)
+    window = (path + [candidate])[-FILTER_WINDOW_POINTS:]
+    quality = calculate_path_quality(window)
+    return quality["accepted"] or quality["reason"] == "Недостаточно горизонтального движения."
+
+
+def apply_motion_delta(path, dx, dy, filter_enabled):
+    if not path:
+        path = [(0, 0)]
+
+    if dx == 0 and dy == 0:
+        return path, False
+
+    if filter_enabled and not should_accept_motion_delta(path, dx, dy):
+        return path, False
+
+    last_x, last_y = path[-1]
+    return path + [(last_x + dx, last_y + dy)], True
 
 # ==========================================
 # ПОТОК ЧТЕНИЯ МЫШИ (Фоновый)
@@ -53,9 +159,12 @@ class MouseListenerThread(QThread):
         super().__init__()
         self.os_type = platform.system()
         self.recording = False
+        self.filter_enabled = False
         self.path =[]
         self.cur_x = 0.0
         self.cur_y = 0.0
+        self.frame_dx = 0.0
+        self.frame_dy = 0.0
         logging.info(f"Инициализация слушателя мыши для ОС: {self.os_type}")
 
     def run(self):
@@ -108,13 +217,14 @@ class MouseListenerThread(QThread):
 
                 elif event.type == evdev.ecodes.EV_REL and self.recording:
                     if event.code == evdev.ecodes.REL_X:
-                        self.cur_x += event.value
+                        self.frame_dx += event.value
                     elif event.code == evdev.ecodes.REL_Y:
-                        self.cur_y -= event.value  
+                        self.frame_dy -= event.value
                         
                 elif event.type == evdev.ecodes.EV_SYN and self.recording:
-                    if not self.path or self.path[-1] != (self.cur_x, self.cur_y):
-                        self.path.append((self.cur_x, self.cur_y))
+                    self.add_motion_delta(self.frame_dx, self.frame_dy)
+                    self.frame_dx = 0.0
+                    self.frame_dy = 0.0
         except Exception as e:
             logging.error(f"Ошибка при чтении устройства: {e}")
 
@@ -143,10 +253,8 @@ class MouseListenerThread(QThread):
                 if self.last_abs_x is not None and self.last_abs_y is not None:
                     dx = x - self.last_abs_x
                     dy = y - self.last_abs_y
-                    self.cur_x += dx
-                    self.cur_y -= dy 
                     if dx != 0 or dy != 0:
-                        self.path.append((self.cur_x, self.cur_y))
+                        self.add_motion_delta(dx, -dy)
                 self.last_abs_x, self.last_abs_y = x, y
 
         logging.info("Слушатель Windows запущен.")
@@ -158,16 +266,23 @@ class MouseListenerThread(QThread):
         self.path =[(0, 0)]
         self.cur_x = 0
         self.cur_y = 0
+        self.frame_dx = 0
+        self.frame_dy = 0
         logging.info("Начата запись движения мыши...")
         self.recordingStartSignal.emit()
+
+    def add_motion_delta(self, dx, dy):
+        self.path, accepted = apply_motion_delta(self.path, dx, dy, self.filter_enabled)
+        if accepted:
+            self.cur_x, self.cur_y = self.path[-1]
 
     def stop_recording(self):
         if self.recording:
             self.recording = False
             logging.info(f"Запись остановлена. Собрано точек: {len(self.path)}")
-            angle, m, b = calculate_regression(self.path)
-            logging.info(f"Результаты расчетов: Угол={angle:.3f}°, m={m:.5f}, b={b:.2f}")
-            self.recordingStopSignal.emit(angle, m, b, self.path)
+            measured_angle, m, b = calculate_regression(self.path)
+            logging.info(f"Результаты расчетов: Отклонение={measured_angle:.3f}°, m={m:.5f}, b={b:.2f}")
+            self.recordingStopSignal.emit(measured_angle, m, b, self.path)
 
 # ==========================================
 # ВИДЖЕТ ОТРИСОВКИ (Холст)
@@ -241,10 +356,14 @@ class PlotWidget(QWidget):
             painter.drawLine(p1, p2)
 
         # Отрисовка идеальной линии тренда
-        line_y1 = self.m * min_x + self.b
-        line_y2 = self.m * max_x + self.b
-        p1 = screen_coords(min_x, line_y1)
-        p2 = screen_coords(max_x, line_y2)
+        if math.isinf(self.m):
+            p1 = screen_coords(self.b, min_y)
+            p2 = screen_coords(self.b, max_y)
+        else:
+            line_y1 = self.m * min_x + self.b
+            line_y2 = self.m * max_x + self.b
+            p1 = screen_coords(min_x, line_y1)
+            p2 = screen_coords(max_x, line_y2)
         
         pen_line = QPen(QColor(RAZER_GREEN), 3)
         painter.setPen(pen_line)
@@ -253,12 +372,35 @@ class PlotWidget(QWidget):
 # ==========================================
 # ГЛАВНОЕ ОКНО ПРИЛОЖЕНИЯ
 # ==========================================
+class SettingsDialog(QDialog):
+    def __init__(self, filter_enabled, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Настройки")
+        self.setModal(True)
+        self.setStyleSheet(f"background-color: {BG_COLOR}; color: white;")
+
+        layout = QVBoxLayout(self)
+        self.filter_checkbox = QCheckBox("Фильтровать неровные участки")
+        self.filter_checkbox.setChecked(filter_enabled)
+        self.filter_checkbox.setStyleSheet(f"QCheckBox::indicator:checked {{ background-color: {RAZER_GREEN}; }}")
+        layout.addWidget(self.filter_checkbox)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def is_filter_enabled(self):
+        return self.filter_checkbox.isChecked()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mouse Rotation Calibrator")
         self.setMinimumSize(700, 500)
         self.resize(800, 600)         
+        self.filter_enabled = False
         
         self.setStyleSheet(f"background-color: {BG_COLOR}; color: white;")
         logging.info("GUI инициализировано.")
@@ -271,11 +413,23 @@ class MainWindow(QMainWindow):
         # Теперь макет будет занимать всю ширину, а тексты центрируем самими виджетами QLabel.
 
         # Заголовок
+        header_layout = QHBoxLayout()
         self.lbl_title = QLabel("КАЛИБРОВКА СЕНСОРА")
         self.lbl_title.setFont(QFont("Arial", 22, QFont.Weight.Bold))
         self.lbl_title.setStyleSheet(f"color: {RAZER_GREEN};")
         self.lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.lbl_title)
+        header_layout.addWidget(self.lbl_title, stretch=1)
+
+        self.btn_settings = QPushButton("⚙")
+        self.btn_settings.setFixedSize(42, 42)
+        self.btn_settings.setToolTip("Настройки")
+        self.btn_settings.setStyleSheet(
+            f"QPushButton {{ color: {RAZER_GREEN}; border: 1px solid #333333; font-size: 22px; }}"
+            f"QPushButton:hover {{ border-color: {RAZER_GREEN}; }}"
+        )
+        self.btn_settings.clicked.connect(self.open_settings)
+        header_layout.addWidget(self.btn_settings)
+        layout.addLayout(header_layout)
 
         self.lbl_instr = QLabel("ЛКМ — Начать | ПКМ — Завершить | F11 — Во весь экран")
         self.lbl_instr.setFont(QFont("Arial", 12))
@@ -305,6 +459,7 @@ class MainWindow(QMainWindow):
 
         # Запуск фонового потока
         self.listener = MouseListenerThread()
+        self.listener.filter_enabled = self.filter_enabled
         self.listener.statusSignal.connect(self.update_status)
         self.listener.recordingStartSignal.connect(self.on_recording_start)
         self.listener.recordingStopSignal.connect(self.on_recording_stop)
@@ -325,6 +480,16 @@ class MainWindow(QMainWindow):
         self.lbl_angle_val.setStyleSheet(f"color: {RAZER_GREEN};")
         self.update_status("✅ Успешно! Можете повторить (ЛКМ).", "white")
         self.canvas.update_result(path, m, b)
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.filter_enabled, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.filter_enabled = dialog.is_filter_enabled()
+            self.listener.filter_enabled = self.filter_enabled
+            if self.filter_enabled:
+                self.update_status("Фильтр неровных участков включен.", RAZER_GREEN)
+            else:
+                self.update_status("Фильтр неровных участков выключен.", "white")
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_F11:
