@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from main import apply_motion_delta, calculate_regression, should_accept_motion_delta
+from main import apply_motion_delta, calculate_regression, should_accept_motion_delta, summarize_series
 
 
 def angle_for(path):
@@ -71,6 +71,25 @@ class CalculateRegressionTests(unittest.TestCase):
 
         self.assertFalse(accepted)
         self.assertEqual(next_path, path)
+
+    def test_summarize_series_returns_mean_median_and_stability(self):
+        summary = summarize_series([
+            {"angle": 1.0},
+            {"angle": 2.0},
+            {"angle": 3.0},
+        ])
+
+        self.assertEqual(summary["count"], 3)
+        self.assertEqual(summary["mean"], 2.0)
+        self.assertEqual(summary["median"], 2.0)
+        self.assertGreater(summary["stability"], 0)
+
+    def test_summarize_empty_series(self):
+        summary = summarize_series([])
+
+        self.assertEqual(summary["count"], 0)
+        self.assertEqual(summary["mean"], 0.0)
+        self.assertEqual(summary["median"], 0.0)
 
 
 if __name__ == "__main__":

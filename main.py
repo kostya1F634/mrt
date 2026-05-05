@@ -2,10 +2,12 @@ import sys
 import math
 import platform
 import logging
+import statistics
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel, QSizePolicy)
 from PyQt6.QtWidgets import QPushButton, QHBoxLayout, QDialog, QCheckBox, QDialogButtonBox
+from PyQt6.QtWidgets import QGroupBox, QGridLayout, QProgressBar, QAbstractButton
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QCursor
 
 # ==========================================
 # НАСТРОЙКА ЛОГИРОВАНИЯ В ТЕРМИНАЛ
@@ -147,13 +149,64 @@ def apply_motion_delta(path, dx, dy, filter_enabled):
     last_x, last_y = path[-1]
     return path + [(last_x + dx, last_y + dy)], True
 
+
+def calculate_path_length(path):
+    return sum(
+        math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1])
+        for i in range(1, len(path))
+    )
+
+
+def quality_score_from_meta(meta, path):
+    length = calculate_path_length(path)
+    if length < 50:
+        return 25, "Коротко"
+
+    rmse_penalty = min(meta.get("rmse_ratio", 1.0) / MAX_FILTER_RMSE_RATIO, 2.0) * 35
+    rejected_penalty = min(meta.get("rejected_ratio", 0.0), 0.5) * 80
+    score = max(0, min(100, round(100 - rmse_penalty - rejected_penalty)))
+
+    if score >= 85:
+        label = "Отлично"
+    elif score >= 65:
+        label = "Хорошо"
+    elif score >= 45:
+        label = "Шумно"
+    else:
+        label = "Повторить"
+
+    return score, label
+
+
+def summarize_series(samples):
+    if not samples:
+        return {
+            "count": 0,
+            "mean": 0.0,
+            "median": 0.0,
+            "spread": 0.0,
+            "stability": 0,
+        }
+
+    angles = [sample["angle"] for sample in samples]
+    spread = statistics.pstdev(angles) if len(angles) > 1 else 0.0
+    stability = max(0, min(100, round(100 - spread * 20)))
+    return {
+        "count": len(samples),
+        "mean": statistics.fmean(angles),
+        "median": statistics.median(angles),
+        "spread": spread,
+        "stability": stability,
+    }
+
 # ==========================================
 # ПОТОК ЧТЕНИЯ МЫШИ (Фоновый)
 # ==========================================
 class MouseListenerThread(QThread):
     statusSignal = pyqtSignal(str, str)
     recordingStartSignal = pyqtSignal()
-    recordingStopSignal = pyqtSignal(float, float, float, list)
+    recordingStopSignal = pyqtSignal(float, float, float, list, dict)
+    leftClickSignal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -165,6 +218,8 @@ class MouseListenerThread(QThread):
         self.cur_y = 0.0
         self.frame_dx = 0.0
         self.frame_dy = 0.0
+        self.accepted_delta_count = 0
+        self.rejected_delta_count = 0
         logging.info(f"Инициализация слушателя мыши для ОС: {self.os_type}")
 
     def run(self):
@@ -211,7 +266,7 @@ class MouseListenerThread(QThread):
             for event in mouse.read_loop():
                 if event.type == evdev.ecodes.EV_KEY:
                     if event.code == evdev.ecodes.BTN_LEFT and event.value == 1:
-                        self.start_recording()
+                        self.leftClickSignal.emit()
                     elif event.code == evdev.ecodes.BTN_RIGHT and event.value == 1:
                         self.stop_recording()
 
@@ -244,7 +299,7 @@ class MouseListenerThread(QThread):
         def on_click(x, y, button, pressed):
             if button == mouse.Button.left and pressed:
                 self.last_abs_x, self.last_abs_y = x, y
-                self.start_recording()
+                self.leftClickSignal.emit()
             elif button == mouse.Button.right and pressed:
                 self.stop_recording()
 
@@ -268,21 +323,39 @@ class MouseListenerThread(QThread):
         self.cur_y = 0
         self.frame_dx = 0
         self.frame_dy = 0
+        self.accepted_delta_count = 0
+        self.rejected_delta_count = 0
         logging.info("Начата запись движения мыши...")
         self.recordingStartSignal.emit()
 
     def add_motion_delta(self, dx, dy):
+        if dx == 0 and dy == 0:
+            return
+
         self.path, accepted = apply_motion_delta(self.path, dx, dy, self.filter_enabled)
         if accepted:
             self.cur_x, self.cur_y = self.path[-1]
+            self.accepted_delta_count += 1
+        else:
+            self.rejected_delta_count += 1
 
     def stop_recording(self):
         if self.recording:
             self.recording = False
             logging.info(f"Запись остановлена. Собрано точек: {len(self.path)}")
             measured_angle, m, b = calculate_regression(self.path)
+            total_delta_count = self.accepted_delta_count + self.rejected_delta_count
+            rejected_ratio = self.rejected_delta_count / total_delta_count if total_delta_count else 0.0
+            quality = calculate_path_quality(self.path)
+            sample_meta = {
+                "accepted_delta_count": self.accepted_delta_count,
+                "rejected_delta_count": self.rejected_delta_count,
+                "rejected_ratio": rejected_ratio,
+                "rmse_ratio": quality["rmse_ratio"],
+            }
             logging.info(f"Результаты расчетов: Отклонение={measured_angle:.3f}°, m={m:.5f}, b={b:.2f}")
-            self.recordingStopSignal.emit(measured_angle, m, b, self.path)
+            self.recordingStopSignal.emit(measured_angle, m, b, self.path, sample_meta)
+
 
 # ==========================================
 # ВИДЖЕТ ОТРИСОВКИ (Холст)
@@ -398,9 +471,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mouse Rotation Calibrator")
-        self.setMinimumSize(700, 500)
-        self.resize(800, 600)         
+        self.setMinimumSize(980, 620)
+        self.resize(1100, 720)         
         self.filter_enabled = False
+        self.samples = []
+        self.last_sample = None
+        self.series_collapsed = False
         
         self.setStyleSheet(f"background-color: {BG_COLOR}; color: white;")
         logging.info("GUI инициализировано.")
@@ -437,20 +513,137 @@ class MainWindow(QMainWindow):
         self.lbl_instr.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_instr)
 
+        center_group = QGroupBox("Текущий замер")
+        center_group.setStyleSheet("QGroupBox { border: 1px solid #333333; margin-top: 12px; padding: 8px; }")
+        center_layout = QVBoxLayout(center_group)
+
         # Холст для рисования
         self.canvas = PlotWidget()
-        layout.addWidget(self.canvas, stretch=1)
+        center_layout.addWidget(self.canvas, stretch=1)
 
         # Значение угла
         self.lbl_angle_title = QLabel("УГОЛ ОТКЛОНЕНИЯ")
         self.lbl_angle_title.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         self.lbl_angle_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.lbl_angle_title)
+        center_layout.addWidget(self.lbl_angle_title)
 
         self.lbl_angle_val = QLabel("0.00°")
         self.lbl_angle_val.setFont(QFont("Arial", 40, QFont.Weight.Bold))
         self.lbl_angle_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.lbl_angle_val)
+        center_layout.addWidget(self.lbl_angle_val)
+
+        quality_layout = QGridLayout()
+        self.quality_bar = QProgressBar()
+        self.quality_bar.setRange(0, 100)
+        self.quality_bar.setValue(0)
+        self.quality_bar.setTextVisible(False)
+        self.quality_bar.setStyleSheet(
+            f"QProgressBar {{ border: 1px solid #333333; background: #111111; height: 10px; }}"
+            f"QProgressBar::chunk {{ background-color: {RAZER_GREEN}; }}"
+        )
+        self.lbl_quality = QLabel("Качество: нет замера")
+        self.lbl_quality.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        quality_layout.addWidget(self.quality_bar, 0, 0)
+        quality_layout.addWidget(self.lbl_quality, 0, 1)
+        center_layout.addLayout(quality_layout)
+        layout.addWidget(center_group, stretch=1)
+
+        self.series_group = QGroupBox()
+        self.series_group.setStyleSheet("QGroupBox { border: 1px solid #333333; margin-top: 12px; padding: 8px; }")
+        series_outer_layout = QVBoxLayout(self.series_group)
+        series_header_layout = QHBoxLayout()
+        series_title = QLabel("Серия замеров")
+        series_title.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        self.btn_toggle_series = QPushButton("Свернуть")
+        self.btn_toggle_series.setFixedWidth(100)
+        self.btn_toggle_series.clicked.connect(self.toggle_series_panel)
+        series_header_layout.addWidget(series_title)
+        series_header_layout.addStretch(1)
+        series_header_layout.addWidget(self.btn_toggle_series)
+        series_outer_layout.addLayout(series_header_layout)
+
+        self.series_body = QWidget()
+        series_body_layout = QHBoxLayout(self.series_body)
+        series_metrics_layout = QGridLayout()
+        self.lbl_series_count = QLabel("0")
+        self.lbl_series_mean = QLabel("—")
+        self.lbl_series_median = QLabel("—")
+        self.lbl_series_spread = QLabel("—")
+        self.lbl_series_stability = QLabel("—")
+        self.lbl_recent_samples = QLabel("Добавьте минимум 3 замера.")
+        self.lbl_recent_samples.setStyleSheet("color: gray;")
+        self.lbl_recent_samples.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.lbl_series_count.setToolTip("Сколько замеров уже добавлено в серию. Чем больше замеров, тем надежнее итог.")
+        self.lbl_series_mean.setToolTip(
+            "Средний угол по всем замерам. Удобен для общей оценки, но чувствителен к случайным плохим замерам."
+        )
+        self.lbl_series_median.setToolTip(
+            "Медианный угол. Обычно надежнее среднего, если один из замеров получился случайно дерганым."
+        )
+        self.lbl_series_spread.setToolTip(
+            "Разброс углов в серии. Маленькое значение значит стабильные повторяемые движения; большое — техника нестабильна."
+        )
+        self.lbl_series_stability.setToolTip(
+            "Оценка повторяемости серии. Ближе к 100% — замеры похожи друг на друга; низкое значение — серию лучше повторить."
+        )
+        self.lbl_recent_samples.setToolTip("Последние замеры серии: номер, угол и качество одиночного замера.")
+        self.btn_add_sample = QPushButton("Добавить в серию")
+        self.btn_add_sample.setEnabled(False)
+        self.btn_add_sample.clicked.connect(self.add_last_sample_to_series)
+        self.btn_add_sample.setStyleSheet(f"color: {RAZER_GREEN}; border: 1px solid #333333; padding: 6px;")
+        metric_count = QLabel("Замеров")
+        metric_mean = QLabel("Среднее")
+        metric_median = QLabel("Медиана")
+        metric_spread = QLabel("Разброс")
+        metric_stability = QLabel("Стабильность")
+        metric_count.setToolTip(self.lbl_series_count.toolTip())
+        metric_mean.setToolTip(self.lbl_series_mean.toolTip())
+        metric_median.setToolTip(self.lbl_series_median.toolTip())
+        metric_spread.setToolTip(self.lbl_series_spread.toolTip())
+        metric_stability.setToolTip(self.lbl_series_stability.toolTip())
+        for metric_label in [metric_count, metric_mean, metric_median, metric_spread, metric_stability]:
+            metric_label.setStyleSheet("color: gray;")
+        series_metrics_layout.setColumnStretch(0, 0)
+        series_metrics_layout.setColumnStretch(1, 0)
+        series_metrics_layout.addWidget(metric_count, 0, 0)
+        series_metrics_layout.addWidget(self.lbl_series_count, 0, 1)
+        series_metrics_layout.addWidget(metric_mean, 1, 0)
+        series_metrics_layout.addWidget(self.lbl_series_mean, 1, 1)
+        series_metrics_layout.addWidget(metric_median, 2, 0)
+        series_metrics_layout.addWidget(self.lbl_series_median, 2, 1)
+        series_metrics_layout.addWidget(metric_spread, 3, 0)
+        series_metrics_layout.addWidget(self.lbl_series_spread, 3, 1)
+        series_metrics_layout.addWidget(metric_stability, 4, 0)
+        series_metrics_layout.addWidget(self.lbl_series_stability, 4, 1)
+        for value_label in [
+            self.lbl_series_count,
+            self.lbl_series_mean,
+            self.lbl_series_median,
+            self.lbl_series_spread,
+            self.lbl_series_stability,
+        ]:
+            value_label.setStyleSheet(f"color: {RAZER_GREEN}; font-weight: bold;")
+        self.lbl_recent_samples.setMinimumWidth(260)
+        self.lbl_recent_samples.setMaximumHeight(86)
+        self.lbl_recent_samples.setWordWrap(False)
+        recent_group = QGroupBox("Показания")
+        recent_group.setStyleSheet("QGroupBox { border: 0; color: gray; margin-top: 8px; }")
+        recent_layout = QVBoxLayout(recent_group)
+        recent_layout.setContentsMargins(0, 8, 0, 0)
+        recent_layout.addWidget(self.lbl_recent_samples)
+        self.btn_remove_last = QPushButton("Удалить последний")
+        self.btn_clear_series = QPushButton("Очистить серию")
+        self.btn_remove_last.clicked.connect(self.remove_last_sample)
+        self.btn_clear_series.clicked.connect(self.clear_series)
+        actions_layout = QHBoxLayout()
+        actions_layout.addWidget(self.btn_add_sample)
+        actions_layout.addWidget(self.btn_remove_last)
+        actions_layout.addWidget(self.btn_clear_series)
+        series_metrics_layout.addLayout(actions_layout, 5, 0, 1, 2)
+        series_body_layout.addLayout(series_metrics_layout, stretch=0)
+        series_body_layout.addWidget(recent_group, stretch=1)
+        series_outer_layout.addWidget(self.series_body)
+        layout.addWidget(self.series_group)
 
         self.lbl_status = QLabel("Инициализация...")
         self.lbl_status.setFont(QFont("Arial", 12))
@@ -461,6 +654,7 @@ class MainWindow(QMainWindow):
         self.listener = MouseListenerThread()
         self.listener.filter_enabled = self.filter_enabled
         self.listener.statusSignal.connect(self.update_status)
+        self.listener.leftClickSignal.connect(self.on_global_left_click)
         self.listener.recordingStartSignal.connect(self.on_recording_start)
         self.listener.recordingStopSignal.connect(self.on_recording_stop)
         self.listener.start()
@@ -469,17 +663,90 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText(msg)
         self.lbl_status.setStyleSheet(f"color: {color};")
 
+    def on_global_left_click(self):
+        widget = QApplication.widgetAt(QCursor.pos())
+        if self.is_interactive_widget(widget):
+            return
+
+        self.listener.start_recording()
+
+    def is_interactive_widget(self, widget):
+        while widget is not None:
+            if isinstance(widget, (QAbstractButton, QDialog, QProgressBar)):
+                return True
+            widget = widget.parentWidget()
+        return False
+
     def on_recording_start(self):
         self.update_status("🔴 Идет запись... Водите мышью влево-вправо.", RAZER_GREEN)
         self.lbl_angle_val.setText("---")
         self.lbl_angle_val.setStyleSheet("color: white;")
+        self.lbl_quality.setText("Качество: идет запись")
+        self.quality_bar.setValue(0)
+        self.btn_add_sample.setEnabled(False)
         self.canvas.set_recording()
 
-    def on_recording_stop(self, angle, m, b, path):
+    def on_recording_stop(self, angle, m, b, path, meta):
         self.lbl_angle_val.setText(f"{angle:.2f}°")
         self.lbl_angle_val.setStyleSheet(f"color: {RAZER_GREEN};")
-        self.update_status("✅ Успешно! Можете повторить (ЛКМ).", "white")
+        score, quality_label = quality_score_from_meta(meta, path)
+        self.quality_bar.setValue(score)
+        self.lbl_quality.setText(
+            f"Качество: {quality_label} · выбросы {meta['rejected_delta_count']} · шум {meta['rmse_ratio'] * 100:.1f}%"
+        )
+        self.last_sample = {
+            "angle": angle,
+            "quality_score": score,
+            "quality_label": quality_label,
+        }
+        self.btn_add_sample.setEnabled(score >= 45)
+        self.update_status("✅ Замер готов. Проверьте качество и добавьте в серию.", "white")
         self.canvas.update_result(path, m, b)
+
+    def add_last_sample_to_series(self):
+        if not self.last_sample:
+            return
+
+        self.samples.append(dict(self.last_sample))
+        self.update_series_stats()
+        self.btn_add_sample.setEnabled(False)
+        self.update_status("Замер добавлен в серию.", RAZER_GREEN)
+
+    def remove_last_sample(self):
+        if self.samples:
+            self.samples.pop()
+            self.update_series_stats()
+            self.update_status("Последний замер удален.", "white")
+
+    def clear_series(self):
+        self.samples.clear()
+        self.update_series_stats()
+        self.update_status("Серия очищена.", "white")
+
+    def toggle_series_panel(self):
+        self.series_collapsed = not self.series_collapsed
+        self.series_body.setVisible(not self.series_collapsed)
+        self.btn_toggle_series.setText("Развернуть" if self.series_collapsed else "Свернуть")
+
+    def update_series_stats(self):
+        summary = summarize_series(self.samples)
+        self.lbl_series_count.setText(str(summary["count"]))
+        if not self.samples:
+            self.lbl_series_mean.setText("—")
+            self.lbl_series_median.setText("—")
+            self.lbl_series_spread.setText("—")
+            self.lbl_series_stability.setText("—")
+            self.lbl_recent_samples.setText("Добавьте минимум 3 замера.")
+            return
+
+        self.lbl_series_mean.setText(f"{summary['mean']:.2f}°")
+        self.lbl_series_median.setText(f"{summary['median']:.2f}°")
+        self.lbl_series_spread.setText(f"±{summary['spread']:.2f}°")
+        self.lbl_series_stability.setText(f"{summary['stability']}%")
+        recent = []
+        for index, sample in list(enumerate(self.samples, start=1))[-5:][::-1]:
+            recent.append(f"#{index}  {sample['angle']:.2f}°  {sample['quality_label']}")
+        self.lbl_recent_samples.setText("\n".join(recent))
 
     def open_settings(self):
         dialog = SettingsDialog(self.filter_enabled, self)
