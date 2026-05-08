@@ -19,7 +19,7 @@ Check whether your natural mouse swipes are actually horizontal. Inspired by [Ra
 
 - [`uv`](https://docs.astral.sh/uv/)
 
-## Desktop Launch
+## Source Launch
 
 Preferred way:
 

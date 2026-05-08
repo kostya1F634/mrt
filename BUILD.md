@@ -49,6 +49,8 @@ make build-windows
 
 The output is written to `dist/windows`.
 
+Windows app icons are taken from `assets/icon_windows.png` (or `assets/icon_windows.ico` if you provide one). The Makefile uses `--clear-cache` for Windows builds so Flet does not reuse an old default icon from `build/flutter`.
+
 Windows builds require Visual Studio with the Desktop development with C++ workload. Developer Mode may also be required because Flutter uses symlinks during builds.
 
 ## Notes

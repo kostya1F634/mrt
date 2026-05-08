@@ -37,7 +37,7 @@ build-linux: check ## Build Linux desktop binary into dist/linux.
 	CFLAGS="$(LINUX_BUILD_CFLAGS)" CXXFLAGS="$(LINUX_BUILD_CFLAGS)" uv run flet build linux . --output "$(BUILD_DIR)/linux" $(FLET_BUILD_COMMON)
 
 build-windows: check ## Build Windows desktop binary into dist/windows; run on Windows only.
-	uv run flet build windows . --output "$(BUILD_DIR)/windows" $(FLET_BUILD_COMMON)
+	uv run flet build windows . --clear-cache --output "$(BUILD_DIR)/windows" $(FLET_BUILD_COMMON)
 
 build-matrix: ## Show Flet platform build matrix.
 	-uv run flet build linux --show-platform-matrix --skip-flutter-doctor

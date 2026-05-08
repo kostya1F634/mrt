@@ -10,6 +10,59 @@ MAX_FILTER_RMSE_RATIO = 0.08
 FILTER_WINDOW_POINTS = 16
 
 
+def normalize_orientation_angle(angle):
+    while angle > 90:
+        angle -= 180
+    while angle <= -90:
+        angle += 180
+    return angle
+
+
+def orientation_mean_deg(angles):
+    if not angles:
+        return 0.0
+    sin_total = statistics.fmean(math.sin(math.radians(2 * angle)) for angle in angles)
+    cos_total = statistics.fmean(math.cos(math.radians(2 * angle)) for angle in angles)
+    if abs(sin_total) < 1e-12 and abs(cos_total) < 1e-12:
+        return normalize_orientation_angle(angles[0])
+    return normalize_orientation_angle(0.5 * math.degrees(math.atan2(sin_total, cos_total)))
+
+
+def signed_orientation_distance_deg(a, b):
+    return normalize_orientation_angle(a - b)
+
+
+def orientation_distance_deg(a, b):
+    return abs(signed_orientation_distance_deg(a, b))
+
+
+def orientation_std_deg(angles, weights=None):
+    if not angles:
+        return 0.0
+    mean_angle = orientation_mean_deg(angles)
+    if weights is None:
+        distances = [orientation_distance_deg(angle, mean_angle) for angle in angles]
+        return math.sqrt(sum(distance * distance for distance in distances) / len(distances))
+
+    weighted = [
+        (orientation_distance_deg(angle, mean_angle), max(weight, 0.0))
+        for angle, weight in zip(angles, weights, strict=False)
+    ]
+    total_weight = sum(weight for _, weight in weighted)
+    if total_weight <= 0:
+        return 0.0
+    return math.sqrt(sum(distance * distance * weight for distance, weight in weighted) / total_weight)
+
+
+def orientation_median_deg(angles):
+    if not angles:
+        return 0.0
+    return min(
+        angles,
+        key=lambda candidate: sum(orientation_distance_deg(candidate, angle) for angle in angles),
+    )
+
+
 def calculate_regression(path):
     if len(path) < 2:
         return 0.0, 0.0, 0.0
@@ -25,10 +78,7 @@ def calculate_regression(path):
         return 0.0, 0.0, mean_y
 
     angle_degrees = 0.5 * math.degrees(math.atan2(2 * sxy, sxx - syy))
-    if angle_degrees > 90:
-        angle_degrees -= 180
-    elif angle_degrees < -90:
-        angle_degrees += 180
+    angle_degrees = normalize_orientation_angle(angle_degrees)
 
     angle_radians = math.radians(angle_degrees)
     if abs(math.cos(angle_radians)) < 1e-12:
@@ -92,11 +142,7 @@ def calculate_path_quality(path):
 
 def normalize_motion_angle(dx, dy):
     angle = math.degrees(math.atan2(dy, dx))
-    if angle > 90:
-        angle -= 180
-    elif angle <= -90:
-        angle += 180
-    return angle
+    return normalize_orientation_angle(angle)
 
 
 def should_accept_motion_delta(path, dx, dy):
@@ -163,12 +209,52 @@ def summarize_series(samples):
         return SeriesSummary()
 
     angles = [sample.angle for sample in samples]
-    spread = statistics.pstdev(angles) if len(angles) > 1 else 0.0
+    spread = orientation_std_deg(angles)
     stability = max(0, min(100, round(100 - spread * 20)))
+    trimmed_mean = orientation_mean_deg(trim_extremes(angles)) if angles else 0.0
+    best_three_average = calculate_best_three_average(samples)
+    consistency_score = calculate_series_consistency(samples, spread)
     return SeriesSummary(
         count=len(samples),
-        mean=statistics.fmean(angles),
-        median=statistics.median(angles),
+        mean=orientation_mean_deg(angles),
+        median=orientation_median_deg(angles),
         spread=spread,
         stability=stability,
+        trimmed_mean=trimmed_mean,
+        best_three_average=best_three_average,
+        consistency_score=consistency_score,
     )
+
+
+def trim_extremes(values):
+    if len(values) < 5:
+        return list(values)
+    center = orientation_mean_deg(values)
+    sorted_values = sorted(values, key=lambda value: signed_orientation_distance_deg(value, center))
+    return sorted_values[1:-1]
+
+
+def calculate_best_three_average(samples):
+    if not samples:
+        return 0.0
+    ranked = sorted(
+        samples,
+        key=lambda sample: (
+            getattr(sample.diagnostics, "confidence_score", 0),
+            sample.quality_score,
+        ),
+        reverse=True,
+    )
+    top = ranked[:3]
+    return orientation_mean_deg([sample.angle for sample in top])
+
+
+def calculate_series_consistency(samples, spread):
+    if not samples:
+        return 0
+
+    confidences = [getattr(sample.diagnostics, "confidence_score", 0) for sample in samples]
+    confidence_score = statistics.fmean(confidences) if confidences else 0.0
+    spread_score = max(0.0, min(100.0, 100.0 - spread * 18.0))
+    combined = round(0.6 * spread_score + 0.4 * confidence_score)
+    return max(0, min(100, combined))

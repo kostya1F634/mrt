@@ -1,7 +1,9 @@
 import logging
 import platform
 import threading
+import time
 
+from mrt_app.diagnostics import analyze_measurement
 from mrt_app.geometry import apply_motion_delta, calculate_path_quality, calculate_regression, quality_score_from_meta
 from mrt_app.models import Measurement, MeasurementMeta
 
@@ -13,12 +15,14 @@ class MouseInputRecorder:
         self.recording = False
         self.filter_enabled = False
         self.path = [(0, 0)]
+        self.timestamps = [0.0]
         self.cur_x = 0.0
         self.cur_y = 0.0
         self.frame_dx = 0.0
         self.frame_dy = 0.0
         self.accepted_delta_count = 0
         self.rejected_delta_count = 0
+        self.recording_started_at = 0.0
         self._thread = None
         self._lock = threading.Lock()
 
@@ -72,7 +76,7 @@ class MouseInputRecorder:
                         self.frame_dy -= event.value
                 elif event.type == evdev.ecodes.EV_SYN:
                     if self.recording:
-                        self.add_motion_delta(self.frame_dx, self.frame_dy)
+                        self.add_motion_delta(self.frame_dx, self.frame_dy, time.perf_counter())
                     self.frame_dx = 0.0
                     self.frame_dy = 0.0
         except Exception as exc:
@@ -98,7 +102,7 @@ class MouseInputRecorder:
             if last_abs["x"] is not None and last_abs["y"] is not None:
                 dx = x - last_abs["x"]
                 dy = y - last_abs["y"]
-                self.add_motion_delta(dx, -dy)
+                self.add_motion_delta(dx, -dy, time.perf_counter())
             last_abs["x"] = x
             last_abs["y"] = y
 
@@ -109,14 +113,16 @@ class MouseInputRecorder:
         with self._lock:
             self.recording = True
             self.path = [(0, 0)]
+            self.timestamps = [0.0]
             self.cur_x = 0.0
             self.cur_y = 0.0
             self.frame_dx = 0.0
             self.frame_dy = 0.0
             self.accepted_delta_count = 0
             self.rejected_delta_count = 0
+            self.recording_started_at = time.perf_counter()
 
-    def add_motion_delta(self, dx, dy):
+    def add_motion_delta(self, dx, dy, event_time=None):
         if dx == 0 and dy == 0:
             return
 
@@ -124,6 +130,8 @@ class MouseInputRecorder:
             self.path, accepted = apply_motion_delta(self.path, dx, dy, self.filter_enabled)
             if accepted:
                 self.cur_x, self.cur_y = self.path[-1]
+                event_time = event_time or time.perf_counter()
+                self.timestamps.append(max(0.0, event_time - self.recording_started_at))
                 self.accepted_delta_count += 1
             else:
                 self.rejected_delta_count += 1
@@ -132,28 +140,39 @@ class MouseInputRecorder:
         with self._lock:
             self.recording = False
             path = list(self.path)
+            timestamps = list(self.timestamps)
             accepted = self.accepted_delta_count
             rejected = self.rejected_delta_count
 
         total = accepted + rejected
         rejected_ratio = rejected / total if total else 0.0
         quality = calculate_path_quality(path)
+        path_length = sum(
+            ((path[index][0] - path[index - 1][0]) ** 2 + (path[index][1] - path[index - 1][1]) ** 2) ** 0.5
+            for index in range(1, len(path))
+        )
+        duration_seconds = timestamps[-1] if timestamps else 0.0
         meta = MeasurementMeta(
             accepted_delta_count=accepted,
             rejected_delta_count=rejected,
             rejected_ratio=rejected_ratio,
             rmse_ratio=quality["rmse_ratio"],
+            path_length=path_length,
+            duration_seconds=duration_seconds,
         )
         angle, slope, intercept = calculate_regression(path)
         quality_score, quality_label = quality_score_from_meta(meta, path)
+        diagnostics = analyze_measurement(path, timestamps, meta)
         return Measurement(
             angle=angle,
             slope=slope,
             intercept=intercept,
             path=path,
+            timestamps=timestamps,
             meta=meta,
             quality_score=quality_score,
             quality_label=quality_label,
+            diagnostics=diagnostics,
         )
 
     def set_filter_enabled(self, enabled):
