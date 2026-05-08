@@ -32,6 +32,8 @@ Use `make help` to list all shortcuts, including `make r` and `make t`.
 
 On Linux, mouse capture uses `evdev` and may require input-device permissions. The app reports the required group command when permissions are missing.
 
+Use `make build-linux` on Linux and `make build-windows` on Windows to create desktop binaries. See `BUILD.md` for platform prerequisites and output locations.
+
 ## Coding Style & Naming Conventions
 
 Follow standard Python style: 4-space indentation, `snake_case` for functions and variables, and `PascalCase` for classes such as `MouseRotationApp` and `MouseInputRecorder`. Keep constants in uppercase, as with `RAZER_GREEN` and `BG_COLOR`.
