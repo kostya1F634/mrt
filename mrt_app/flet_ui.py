@@ -1,5 +1,6 @@
 import asyncio
 import math
+from pathlib import Path
 
 import flet as ft
 import flet.canvas as cv
@@ -68,6 +69,9 @@ class MouseRotationApp:
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = BG_COLOR
         self.page.padding = 18
+        icon_path = Path("assets/icon.png")
+        if icon_path.exists():
+            self.page.window.icon = str(icon_path.resolve())
         self.page.window.width = 1120
         self.page.window.height = 760
         self.page.window.min_width = 900

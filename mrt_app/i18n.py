@@ -3,7 +3,7 @@ DEFAULT_LANGUAGE = "en"
 
 TRANSLATIONS = {
     "en": {
-        "app_title": "Mouse Rotation Calibrator",
+        "app_title": "Mouse Rotation Tuner",
         "angle": "Angle",
         "quality": "Quality",
         "quality_none": "Quality: no measurement",

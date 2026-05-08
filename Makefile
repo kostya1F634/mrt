@@ -5,7 +5,7 @@ BUILD_DIR ?= dist
 LINUX_BIN ?= $(BUILD_DIR)/linux/mouse-rotation-calibrator
 WINDOWS_BIN ?= $(BUILD_DIR)/windows/mouse-rotation-calibrator.exe
 FLET_PROJECT ?= mouse-rotation-calibrator
-FLET_PRODUCT ?= Mouse Rotation Calibrator
+FLET_PRODUCT ?= Mouse Rotation Tuner
 FLET_ORG ?= com.local
 FLET_BUILD_COMMON = --project "$(FLET_PROJECT)" --product "$(FLET_PRODUCT)" --description "Mouse rotation calibration tool" --org "$(FLET_ORG)" --exclude archive --exclude tests --exclude .git --exclude .venv --exclude .uv-cache
 LINUX_BUILD_CFLAGS ?= -Wno-error=macro-redefined
