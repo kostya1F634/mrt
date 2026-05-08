@@ -1,3 +1,4 @@
+import asyncio
 import math
 
 import flet as ft
@@ -39,8 +40,6 @@ class MouseRotationApp:
             shapes=[],
         )
 
-        self.start_button = ft.FilledButton(self.t("start"), icon=ft.Icons.PLAY_ARROW, on_click=self.start_recording)
-        self.stop_button = ft.OutlinedButton(self.t("stop"), icon=ft.Icons.STOP, disabled=True, on_click=self.stop_recording)
         self.add_button = ft.OutlinedButton(self.t("add_to_series"), icon=ft.Icons.ADD, disabled=True, on_click=self.add_sample)
         self.header_add_button = ft.OutlinedButton(
             self.t("add_to_series"),
@@ -57,6 +56,7 @@ class MouseRotationApp:
         self.recent_samples = ft.Text(self.t("empty_series"), color=MUTED_COLOR, selectable=True)
         self.series_body = ft.Row(spacing=24)
         self.series_header_metrics = ft.Row(spacing=14, expand=True)
+        self.series_header_actions = ft.Row([self.header_add_button, self.toggle_button], spacing=8)
         self.current_title = ft.Text(self.t("current_measurement"), size=18, weight=ft.FontWeight.BOLD)
         self.series_title = ft.Text(self.t("series"), size=16, weight=ft.FontWeight.BOLD)
 
@@ -74,6 +74,7 @@ class MouseRotationApp:
         self.page.window.min_height = 620
         self.page.window.maximized = True
         self.page.on_keyboard_event = self.on_keyboard_event
+        self.page.on_resize = self.on_page_resize
 
         current_panel = ft.Container(
             expand=True,
@@ -116,6 +117,8 @@ class MouseRotationApp:
             ),
         ]
         self.series_body.visible = not self.series_collapsed
+        self.series_header_metrics.visible = self.series_collapsed
+        self.series_header_actions.visible = True
 
         series_panel = ft.Container(
             bgcolor=PANEL_COLOR,
@@ -127,7 +130,7 @@ class MouseRotationApp:
                         [
                             self.series_title,
                             self.series_header_metrics,
-                            ft.Row([self.header_add_button, self.toggle_button], spacing=8),
+                            self.series_header_actions,
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
@@ -152,7 +155,7 @@ class MouseRotationApp:
                                 spacing=16,
                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             ),
-                            ft.Row([self.start_button, self.stop_button, self.settings_button], spacing=8),
+                            ft.Row([self.settings_button], spacing=8),
                         ],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                     ),
@@ -166,6 +169,7 @@ class MouseRotationApp:
         self.refresh_canvas([])
         self.refresh_series()
         self.recorder.start_listener()
+        self.page.run_task(self.post_mount_refresh)
 
     def set_status(self, message, color=MUTED_COLOR):
         self.status_text.value = message
@@ -175,11 +179,25 @@ class MouseRotationApp:
     def on_canvas_resize(self, event):
         self.canvas_width = max(event.width, 1)
         self.canvas_height = max(event.height, 1)
+        self.refresh_current_canvas()
+        self.canvas.update()
+
+    def on_page_resize(self, _event):
+        self.page.run_task(self.post_mount_refresh)
+
+    async def post_mount_refresh(self):
+        # Flet may maximize the window before the canvas reports final size.
+        for delay in (0.0, 0.05, 0.15):
+            if delay:
+                await asyncio.sleep(delay)
+            self.refresh_current_canvas()
+            self.page.update()
+
+    def refresh_current_canvas(self):
         if self.last_measurement:
             self.refresh_canvas(self.last_measurement.path, self.last_measurement.slope, self.last_measurement.intercept)
         else:
             self.refresh_canvas([])
-        self.canvas.update()
 
     def start_recording(self, _=None):
         if self.recording:
@@ -190,8 +208,6 @@ class MouseRotationApp:
         self.last_measurement_added = False
         self.add_button.disabled = True
         self.header_add_button.disabled = True
-        self.start_button.disabled = True
-        self.stop_button.disabled = False
         self.angle_text.value = "---"
         self.quality_text.value = self.t("quality_recording")
         self.quality_bar.value = 0
@@ -208,8 +224,6 @@ class MouseRotationApp:
         measurement = self.recorder.stop_recording()
         self.last_measurement = measurement
         self.last_measurement_added = False
-        self.start_button.disabled = False
-        self.stop_button.disabled = True
         self.add_button.disabled = measurement.quality_score < 45
         self.header_add_button.disabled = measurement.quality_score < 45
         self.angle_text.value = f"{measurement.angle:.2f}°"
@@ -256,6 +270,8 @@ class MouseRotationApp:
     def toggle_series(self, _=None):
         self.series_collapsed = not self.series_collapsed
         self.series_body.visible = not self.series_collapsed
+        self.series_header_metrics.visible = self.series_collapsed
+        self.header_add_button.visible = self.series_collapsed
         self.toggle_button.content = self.t("expand") if self.series_collapsed else self.t("collapse")
         self.toggle_button.icon = ft.Icons.EXPAND_LESS if self.series_collapsed else ft.Icons.EXPAND_MORE
         self.page.update()
@@ -309,8 +325,6 @@ class MouseRotationApp:
     def apply_language(self):
         self.page.title = self.t("app_title")
         self.angle_label.value = self.t("angle")
-        self.start_button.content = self.t("start")
-        self.stop_button.content = self.t("stop")
         self.add_button.content = self.t("add_to_series")
         self.header_add_button.content = self.t("add_to_series")
         self.remove_button.content = self.t("remove_last")
@@ -367,6 +381,7 @@ class MouseRotationApp:
             self.compact_metric(self.t("samples"), summary.count, self.t("good_more_samples")),
             self.compact_metric(self.t("mean"), self.format_angle(summary.mean), self.t("mean_help")),
             self.compact_metric(self.t("median"), self.format_angle(summary.median), self.t("median_help")),
+            self.compact_metric(self.t("spread"), f"±{summary.spread:.2f}°", self.t("spread_help")),
             self.compact_metric(self.t("stability"), f"{summary.stability}%", self.t("stability_help")),
         ]
         self.recent_samples.value = "\n".join(
