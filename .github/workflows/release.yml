@@ -12,6 +12,11 @@ jobs:
   build:
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    env:
+      CI: "true"
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      FLET_CLI_NO_RICH_OUTPUT: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +66,9 @@ jobs:
           uv run flet build linux . \
             --output "dist/linux" \
             --build-version "$VERSION" \
+            --yes \
+            --no-rich-output \
+            --skip-flutter-doctor \
             --project "mouse-rotation-calibrator" \
             --product "Mouse Rotation Tuner" \
             --description "Mouse rotation calibration tool" \
@@ -82,6 +90,9 @@ jobs:
           uv run flet build windows . \
             --output "dist/windows" \
             --build-version "$VERSION" \
+            --yes \
+            --no-rich-output \
+            --skip-flutter-doctor \
             --project "mouse-rotation-calibrator" \
             --product "Mouse Rotation Tuner" \
             --description "Mouse rotation calibration tool" \
