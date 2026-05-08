@@ -14,6 +14,7 @@ from mrt_app.ui_sections import DiagnosticsSection, HeaderSection, SeriesSection
 
 DEFAULT_CANVAS_WIDTH = 900
 DEFAULT_CANVAS_HEIGHT = 320
+MAX_DISPLAY_PATH_POINTS = 320
 
 
 class MouseRotationApp:
@@ -323,10 +324,11 @@ class MouseRotationApp:
         ]
 
         if len(path) >= 2:
-            min_x = min(point[0] for point in path)
-            max_x = max(point[0] for point in path)
-            min_y = min(point[1] for point in path)
-            max_y = max(point[1] for point in path)
+            display_path = self.simplify_path_for_display(path)
+            min_x = min(point[0] for point in display_path)
+            max_x = max(point[0] for point in display_path)
+            min_y = min(point[1] for point in display_path)
+            max_y = max(point[1] for point in display_path)
             w_range = max(abs(max_x - min_x), 1)
             h_range = max(abs(max_y - min_y), 1)
             scale = min((width * 0.82) / w_range, (height * 0.78) / h_range)
@@ -337,9 +339,9 @@ class MouseRotationApp:
                 x, y = point
                 return (width / 2 + (x - offset_x) * scale, height / 2 - (y - offset_y) * scale)
 
-            for index in range(1, len(path)):
-                x1, y1 = screen(path[index - 1])
-                x2, y2 = screen(path[index])
+            for index in range(1, len(display_path)):
+                x1, y1 = screen(display_path[index - 1])
+                x2, y2 = screen(display_path[index])
                 shapes.append(cv.Line(x1, y1, x2, y2, paint=self.paint("#f4f4f4", 2)))
 
             if math.isinf(slope):
@@ -364,6 +366,21 @@ class MouseRotationApp:
 
     def paint(self, color, width):
         return ft.Paint(color=color, stroke_width=width, style=ft.PaintingStyle.STROKE)
+
+    def simplify_path_for_display(self, path):
+        if len(path) <= MAX_DISPLAY_PATH_POINTS:
+            return path
+
+        step = (len(path) - 1) / (MAX_DISPLAY_PATH_POINTS - 1)
+        indices = []
+        for point_index in range(MAX_DISPLAY_PATH_POINTS):
+            candidate = round(point_index * step)
+            if not indices or candidate != indices[-1]:
+                indices.append(candidate)
+
+        if indices[-1] != len(path) - 1:
+            indices[-1] = len(path) - 1
+        return [path[index] for index in indices]
 
     def format_angle(self, value, allow_empty=None):
         if allow_empty is not None and not allow_empty:
