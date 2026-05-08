@@ -4,7 +4,7 @@
 
 # Mouse Rotation Tuner
 
-Check whether your natural mouse swipes are actually horizontal. Inspired by [Razer Mouse Rotation Calibration](https://www.razer.com/eu-en/technology/mouse-rotation-tool), this version goes further with cleaner measurements and better repeatability. The latest build is available in [Releases](https://github.com/kostya1F634/mouse-rotation-tuner/releases/tag/v1.1.0).
+Check whether your natural mouse swipes are actually horizontal. Inspired by [Razer Mouse Rotation Calibration](https://www.razer.com/eu-en/technology/mouse-rotation-tool), this version goes further with cleaner measurements and better repeatability. The latest build is available in [Releases](https://github.com/kostya1F634/mouse-rotation-tuner/releases/tag/v1.1.1).
 
 ## Features
 
