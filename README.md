@@ -16,13 +16,12 @@ Check whether your natural mouse swipes are actually horizontal. Inspired by [Ra
 - Series statistics with mean, median, spread, stability, trimmed mean, and best-three average.
 - Fast repeat-and-review workflow for collecting only usable measurements.
 
-![Application screenshot](assets/app.png)
-
-## Requirements
-
-- [`uv`](https://docs.astral.sh/uv/)
+<img width="1848" height="1129" alt="app" src="https://github.com/user-attachments/assets/3f1ce859-84a3-4780-83a7-897c513168fa" />
 
 ## Source Launch
+Requirements:
+
+- [`uv`](https://docs.astral.sh/uv/)
 
 Preferred way:
 
@@ -42,8 +41,6 @@ uv run main.py
 make build-linux
 make build-windows
 ```
-
-See [BUILD.md](BUILD.md) for platform-specific notes and prerequisites.
 
 ## License
 
