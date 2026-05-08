@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: Linux
+            artifact_name: mouse-rotation-tuner-linux
+          - os: windows-latest
+            label: Windows
+            artifact_name: mouse-rotation-tuner-windows
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Run checks
+        run: |
+          uv run python -m py_compile main.py mrt_app/*.py archive/pyqt_main.py tests/test_regression.py
+          uv run python -m unittest discover -s tests
+
+      - name: Build Linux release
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${VERSION#v}"
+          CFLAGS="-Wno-error=macro-redefined" \
+          CXXFLAGS="-Wno-error=macro-redefined" \
+          uv run flet build linux . \
+            --output "dist/linux" \
+            --build-version "$VERSION" \
+            --project "mouse-rotation-calibrator" \
+            --product "Mouse Rotation Tuner" \
+            --description "Mouse rotation calibration tool" \
+            --org "com.local" \
+            --exclude archive \
+            --exclude tests \
+            --exclude .git \
+            --exclude .github \
+            --exclude .venv \
+            --exclude .uv-cache
+
+      - name: Build Windows release
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${VERSION#v}"
+          uv run flet build windows . \
+            --output "dist/windows" \
+            --build-version "$VERSION" \
+            --project "mouse-rotation-calibrator" \
+            --product "Mouse Rotation Tuner" \
+            --description "Mouse rotation calibration tool" \
+            --org "com.local" \
+            --exclude archive \
+            --exclude tests \
+            --exclude .git \
+            --exclude .github \
+            --exclude .venv \
+            --exclude .uv-cache
+
+      - name: Package Linux artifact
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${VERSION#v}"
+          tar -C dist/linux -czf "mouse-rotation-tuner-${VERSION}-linux-x64.tar.gz" .
+
+      - name: Package Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          $version = $env:VERSION.Substring(1)
+          Compress-Archive -Path "dist/windows/*" -DestinationPath "mouse-rotation-tuner-$version-windows-x64.zip" -Force
+
+      - name: Upload Linux artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: mouse-rotation-tuner-*-linux-x64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: mouse-rotation-tuner-*-windows-x64.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    runs-on: ubuntu-24.04
+    needs: build
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Mouse Rotation Tuner ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*
